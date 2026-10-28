@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import time
+import threading
 from flask import Flask, Response
 from playwright.async_api import async_playwright
 import urllib.request
@@ -12,8 +13,9 @@ app = Flask(__name__)
 
 SOURCE_URL = "https://livelive24.com/test/ntv/ntv.json"
 
-# Cache diperpanjang jadi 1 jam agar tidak sering-sering scrape ulang
-cache_playlist = {"content": "#EXTM3U\n# Sedang memuat data, silakan refresh beberapa saat lagi...", "timestamp": 0}
+# Variabel global untuk menyimpan cache playlist
+playlist_cache = "#EXTM3U\n# Sedang memproses data di latar belakang, silakan refresh beberapa saat lagi..."
+is_updating = False
 
 def decode_stream_url(url: str) -> str:
     if not url:
@@ -50,7 +52,6 @@ async def capture_m3u8(page_url):
     
     try:
         async with async_playwright() as p:
-            # Menggunakan argumen hemat memori
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
@@ -113,8 +114,6 @@ async def generate_m3u_async():
             channel_title = f"{title} ({stream_name})"
             
             decoded_url = decode_stream_url(raw_url)
-            
-            # Proses satu per satu (Sequential) agar RAM aman di bawah 512MB
             final_url = await capture_m3u8(decoded_url)
 
             extinf = (
@@ -131,19 +130,30 @@ async def generate_m3u_async():
 
     return "\n".join(lines)
 
+def background_updater():
+    global playlist_cache, is_updating
+    while True:
+        is_updating = True
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            new_content = loop.run_until_complete(generate_m3u_async())
+            if new_content and "#EXTM3U" in new_content:
+                playlist_cache = new_content
+        except Exception as e:
+            print(f"Background update error: {e}")
+        is_updating = False
+        
+        # Update ulang setiap 30 menit sekali di latar belakang
+        time.sleep(1800)
+
+# Jalankan background thread otomatis saat aplikasi nyala
+threading.Thread(target=background_updater, daemon=True).Current = True
+
 @app.route("/")
 def index():
-    global cache_playlist
-    current_time = time.time()
-    
-    # Update cache setiap 1 jam sekali agar tidak memberatkan server
-    if not cache_playlist["content"] or (current_time - cache_playlist["timestamp"] > 3600):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        cache_playlist["content"] = loop.run_until_complete(generate_m3u_async())
-        cache_playlist["timestamp"] = current_time
-
-    return Response(cache_playlist["content"], mimetype="text/plain; charset=utf-8")
+    # Langsung berikan teks playlist dari cache secara instan (tanpa timeout)
+    return Response(playlist_cache, mimetype="text/plain; charset=utf-8")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
