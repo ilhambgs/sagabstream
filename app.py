@@ -57,7 +57,6 @@ async def capture_m3u8(page_url):
     browser = None
     try:
         async with async_playwright() as p:
-            # Argumen tambahan agar lebih stabil di server ber-RAM kecil
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
@@ -75,24 +74,35 @@ async def capture_m3u8(page_url):
             real_url = page_url
             found = False
             
-            async def intercept(route, request):
+            # Pantau semua request jaringan yang mengandung m3u8 atau manifest
+            async def handle_request(request):
                 nonlocal real_url, found
-                if ".m3u8" in request.url:
-                    real_url = request.url
+                req_url = request.url
+                if any(ext in req_url.lower() for ext in [".m3u8", ".ts", "playlist.m3u8", "manifest"]):
+                    real_url = req_url
                     found = True
-                await route.continue_()
 
-            await page.route("**/*", intercept)
+            page.on("request", handle_request)
+            
             try:
-                await page.goto(page_url, timeout=7000)
-                await asyncio.sleep(1.5)
+                await page.goto(page_url, timeout=9000)
+                # Tunggu sebentar agar script player sempat mengeksekusi fetch/XHR stream
+                await asyncio.sleep(3)
+                
+                # Cek juga isi sumber halaman (source code) kalau-kalau link m3u8 tertanam di dalam script JS
+                content = await page.content()
+                import re
+                m3u8_matches = re.findall(r'https?://[^\s<>"]+?\.m3u8[^\s<>"]*', content)
+                if m3u8_matches:
+                    real_url = m3u8_matches[0]
+                    found = True
             except Exception:
                 pass
             
             await browser.close()
             return real_url, found
     except Exception as e:
-        print(f"⚠️ Browser tangkap error (diabaikan agar aman): {e}")
+        print(f"⚠️ Error tangkap stream: {e}")
         if browser:
             try:
                 await browser.close()
@@ -189,7 +199,6 @@ def background_updater():
         except Exception as e:
             print(f"❌ Error pada background worker: {e}")
         
-        # Jeda 30 menit
         time.sleep(1800)
 
 updater_thread = threading.Thread(target=background_updater, daemon=True)
