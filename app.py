@@ -54,15 +54,19 @@ async def capture_m3u8(page_url):
     if not page_url.startswith("http"):
         return page_url, False
     
+    browser = None
     try:
         async with async_playwright() as p:
+            # Argumen tambahan agar lebih stabil di server ber-RAM kecil
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage", 
-                    "--single-process"
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--no-zygote"
                 ]
             )
             context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -80,13 +84,20 @@ async def capture_m3u8(page_url):
 
             await page.route("**/*", intercept)
             try:
-                await page.goto(page_url, timeout=8000)
-                await asyncio.sleep(2)
+                await page.goto(page_url, timeout=7000)
+                await asyncio.sleep(1.5)
             except Exception:
                 pass
+            
             await browser.close()
             return real_url, found
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Browser tangkap error (diabaikan agar aman): {e}")
+        if browser:
+            try:
+                await browser.close()
+            except:
+                pass
         return page_url, False
 
 async def generate_m3u_async():
@@ -181,7 +192,6 @@ def background_updater():
         # Jeda 30 menit
         time.sleep(1800)
 
-# Memulai Background Thread dengan benar
 updater_thread = threading.Thread(target=background_updater, daemon=True)
 updater_thread.start()
 
