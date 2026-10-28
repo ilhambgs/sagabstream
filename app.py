@@ -13,7 +13,6 @@ app = Flask(__name__)
 
 SOURCE_URL = "https://livelive24.com/test/ntv/ntv.json"
 
-# Variabel untuk menyimpan cache dan statistik
 playlist_cache = "#EXTM3U\n# Sedang memproses data di latar belakang, silakan refresh beberapa saat lagi..."
 stats_info = {
     "total_sources": 0,
@@ -92,11 +91,13 @@ async def capture_m3u8(page_url):
 
 async def generate_m3u_async():
     global stats_info
+    print("📡 Mengunduh data JSON sumber...")
     req = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
+        print(f"❌ Gagal mengambil JSON: {e}")
         return f"#EXTM3U\n# Error fetching JSON: {e}"
 
     success_count = 0
@@ -127,8 +128,6 @@ async def generate_m3u_async():
             channel_title = f"{title} ({stream_name})"
             
             decoded_url = decode_stream_url(raw_url)
-            
-            # Ambil link m3u8 dan cek apakah berhasil tertangkap (.m3u8)
             final_url, is_success = await capture_m3u8(decoded_url)
             
             if is_success:
@@ -148,13 +147,11 @@ async def generate_m3u_async():
             lines.append(final_url)
             lines.append("")
 
-    # Update statistik global
     stats_info["total_sources"] = total_count
     stats_info["success_m3u8"] = success_count
     stats_info["failed_m3u8"] = fail_count
     stats_info["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
-    # Sisipkan informasi statistik di baris paling atas file M3U
     header_info = (
         f"# 📊 STATISTIK M3U8:\n"
         f"# Total Channel : {total_count}\n"
@@ -170,30 +167,28 @@ async def generate_m3u_async():
 def background_updater():
     global playlist_cache
     while True:
+        print("🔄 Background worker mulai merayapi link .m3u8...")
         try:
-            print("🔄 Memulai proses pengambilan link m3u8...")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             new_content = loop.run_until_complete(generate_m3u_async())
             if new_content and "#EXTM3U" in new_content:
                 playlist_cache = new_content
-            print("✅ Proses selesai! Cache M3U berhasil diperbarui.")
+            print("✅ Selesai! Cache M3U berhasil diperbarui.")
         except Exception as e:
-            print(f"❌ Background update error: {e}")
+            print(f"❌ Error pada background worker: {e}")
         
-        # Jeda 30 menit sebelum update otomatis berikutnya
+        # Jeda 30 menit
         time.sleep(1800)
 
-# Jalankan background thread otomatis saat aplikasi nyala
-threading.Thread(target=background_updater, daemon=True).start = (lambda original_start: lambda self: original_start(self))(threading.Thread.start)
-# Jalankan thread
-threading.Thread(target=background_updater, daemon=True).start()
+# Memulai Background Thread dengan benar
+updater_thread = threading.Thread(target=background_updater, daemon=True)
+updater_thread.start()
 
 @app.route("/")
 def index():
     return Response(playlist_cache, mimetype="text/plain; charset=utf-8")
 
-# Endpoint tambahan untuk melihat statistik dalam bentuk JSON
 @app.route("/status")
 def status():
     return stats_info
