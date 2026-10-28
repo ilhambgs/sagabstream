@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 SOURCE_URL = "https://livelive24.com/test/ntv/ntv.json"
 
-# Cache untuk menyimpan hasil M3U (Cache selama 30 menit)
+# Cache diperpanjang jadi 1 jam agar tidak sering-sering scrape ulang
 cache_playlist = {"content": "#EXTM3U\n# Sedang memuat data, silakan refresh beberapa saat lagi...", "timestamp": 0}
 
 def decode_stream_url(url: str) -> str:
@@ -50,7 +50,16 @@ async def capture_m3u8(page_url):
     
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            # Menggunakan argumen hemat memori
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=[
+                    "--no-sandbox", 
+                    "--disable-setuid-sandbox", 
+                    "--disable-dev-shm-usage", 
+                    "--single-process"
+                ]
+            )
             context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             page = await context.new_page()
             
@@ -64,40 +73,14 @@ async def capture_m3u8(page_url):
 
             await page.route("**/*", intercept)
             try:
-                await page.goto(page_url, timeout=10000)
-                await asyncio.sleep(3)
+                await page.goto(page_url, timeout=8000)
+                await asyncio.sleep(2)
             except Exception:
                 pass
             await browser.close()
             return real_url
     except Exception:
         return page_url
-
-async def process_source(item, src):
-    title = item.get("title") or item.get("name") or "Live Match"
-    group = item.get("tournament") or item.get("category") or "Sports"
-    logo = item.get("image") or item.get("logo") or "https://livelive24.com/fav.png"
-    item_id = str(item.get("id") or "")
-
-    raw_url = src.get("url") or src.get("stream_url") or ""
-    if not raw_url:
-        return None
-
-    stream_name = src.get("channelName") or src.get("name") or src.get("quality") or "Stream"
-    channel_title = f"{title} ({stream_name})"
-    
-    decoded_url = decode_stream_url(raw_url)
-    final_url = await capture_m3u8(decoded_url)
-
-    extinf = (
-        f'#EXTINF:-1 '
-        f'tvg-id="{item_id}" '
-        f'tvg-name="{channel_title}" '
-        f'tvg-logo="{logo}" '
-        f'group-title="{group}",'
-        f'{channel_title}'
-    )
-    return f"{extinf}\n{final_url}\n"
 
 async def generate_m3u_async():
     req = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "Mozilla/5.0"})
@@ -110,22 +93,41 @@ async def generate_m3u_async():
     lines = ['#EXTM3U', '']
     items = data if isinstance(data, list) else []
 
-    # Kumpulkan semua tugas (tasks) untuk diproses secara paralel/bersamaan
-    tasks = []
     for item in items:
         if not isinstance(item, dict):
             continue
+        title = item.get("title") or item.get("name") or "Live Match"
+        group = item.get("tournament") or item.get("category") or "Sports"
+        logo = item.get("image") or item.get("logo") or "https://livelive24.com/fav.png"
+        item_id = str(item.get("id") or "")
+
         sources = item.get("sources") or item.get("streams") or []
         for src in sources:
-            if isinstance(src, dict):
-                tasks.append(process_source(item, src))
+            if not isinstance(src, dict):
+                continue
+            raw_url = src.get("url") or src.get("stream_url") or ""
+            if not raw_url:
+                continue
 
-    # Jalankan semua pemindaian browser secara bersamaan agar sangat cepat
-    results = await asyncio.gather(*tasks)
+            stream_name = src.get("channelName") or src.get("name") or src.get("quality") or "Stream"
+            channel_title = f"{title} ({stream_name})"
+            
+            decoded_url = decode_stream_url(raw_url)
+            
+            # Proses satu per satu (Sequential) agar RAM aman di bawah 512MB
+            final_url = await capture_m3u8(decoded_url)
 
-    for res in results:
-        if res:
-            lines.append(res)
+            extinf = (
+                f'#EXTINF:-1 '
+                f'tvg-id="{item_id}" '
+                f'tvg-name="{channel_title}" '
+                f'tvg-logo="{logo}" '
+                f'group-title="{group}",'
+                f'{channel_title}'
+            )
+            lines.append(extinf)
+            lines.append(final_url)
+            lines.append("")
 
     return "\n".join(lines)
 
@@ -134,8 +136,8 @@ def index():
     global cache_playlist
     current_time = time.time()
     
-    # Update cache jika kosong atau sudah lebih dari 30 menit
-    if not cache_playlist["content"] or (current_time - cache_playlist["timestamp"] > 1800):
+    # Update cache setiap 1 jam sekali agar tidak memberatkan server
+    if not cache_playlist["content"] or (current_time - cache_playlist["timestamp"] > 3600):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         cache_playlist["content"] = loop.run_until_complete(generate_m3u_async())
