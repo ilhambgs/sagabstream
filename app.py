@@ -54,9 +54,12 @@ async def capture_m3u8(page_url):
     if not page_url.startswith("http"):
         return page_url, False
     
-    browser = None
+    real_url = page_url
+    found = False
+    
     try:
         async with async_playwright() as p:
+            # Gunakan argumen ekstra ringan untuk RAM kecil
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
@@ -64,17 +67,17 @@ async def capture_m3u8(page_url):
                     "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage", 
                     "--disable-gpu",
-                    "--disable-extensions",
+                    "--single-process",
                     "--no-zygote"
                 ]
             )
-            context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            # Buat context baru yang bersih dari cache untuk menghemat memori
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                java_script_enabled=True
+            )
             page = await context.new_page()
             
-            real_url = page_url
-            found = False
-            
-            # Pantau semua request jaringan yang mengandung m3u8 atau manifest
             async def handle_request(request):
                 nonlocal real_url, found
                 req_url = request.url
@@ -85,29 +88,22 @@ async def capture_m3u8(page_url):
             page.on("request", handle_request)
             
             try:
-                await page.goto(page_url, timeout=9000)
-                # Tunggu sebentar agar script player sempat mengeksekusi fetch/XHR stream
-                await asyncio.sleep(3)
-                
-                # Cek juga isi sumber halaman (source code) kalau-kalau link m3u8 tertanam di dalam script JS
-                content = await page.content()
-                import re
-                m3u8_matches = re.findall(r'https?://[^\s<>"]+?\.m3u8[^\s<>"]*', content)
-                if m3u8_matches:
-                    real_url = m3u8_matches[0]
-                    found = True
+                await page.goto(page_url, timeout=7000)
+                await asyncio.sleep(2)
             except Exception:
                 pass
             
+            # Tutup context dan browser secara eksplisit untuk membebaskan RAM seketika
+            await context.close()
             await browser.close()
+            
+            # Beri jeda 1 detik agar sistem Render tidak kepayahan memproses CPU/RAM secara kontinu
+            await asyncio.sleep(1)
+            
             return real_url, found
+            
     except Exception as e:
-        print(f"⚠️ Error tangkap stream: {e}")
-        if browser:
-            try:
-                await browser.close()
-            except:
-                pass
+        print(f"⚠️ Browser tangkap error (diabaikan agar aman): {e}")
         return page_url, False
 
 async def generate_m3u_async():
